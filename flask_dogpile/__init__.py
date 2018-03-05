@@ -11,11 +11,16 @@ except ImportError:
 from dogpile.cache import make_region
 from dogpile.cache.util import kwarg_function_key_generator
 from dogpile.cache.util import sha1_mangle_key
+from functools import wraps
 
 class FlaskDogpile(object):
+    FUNC_REGION_NAME_ATTR = 'dogpile_cache_region_name'
+
     def __init__(self, app=None):
         self.app = app
         self._regions = None
+        self._regions_decorators = None
+        self._regions_decorators_multi = None
         if app is not None:
             self.init_app(app)
 
@@ -24,16 +29,23 @@ class FlaskDogpile(object):
         app.config.setdefault("DOGPILE_BACKEND_URL", 'localhost:3679')
         app.config.setdefault("DOGPILE_BACKEND_ARGUMENTS", None)
         app.config.setdefault("DOGPILE_REGIONS", [("default", 3600)])
+        self.create_regions(app)
+        if not hasattr(app, 'extensions'):
+            app.extensions = {}
+        app.extensions['dogpile_cache'] = self
 
-    def create_regions(self):
-        region_config = current_app.config['DOGPILE_REGIONS']
-        backend = current_app.config['DOGPILE_BACKEND']
-        backend_args = current_app.config['DOGPILE_BACKEND_ARGUMENTS']
-        backend_url = current_app.config['DOGPILE_BACKEND_URL']
-        regions = {}
+    def create_regions(self, app):
+        region_config = app.config['DOGPILE_REGIONS']
+        backend = app.config['DOGPILE_BACKEND']
+        backend_args = app.config['DOGPILE_BACKEND_ARGUMENTS']
+        backend_url = app.config['DOGPILE_BACKEND_URL']
+        self._regions = {}
+        self._regions_decorators = {}
+        self._regions_decorators_multi = {}
         for name, expiration in region_config:
             args = {"url": backend_url}
-            args.update(backend_args)
+            if backend_args is not None:
+                args.update(backend_args)
             r = make_region(
                 name=name,
                 function_key_generator=kwarg_function_key_generator,
@@ -41,26 +53,61 @@ class FlaskDogpile(object):
                     backend=backend,
                     expiration_time=int(expiration),
                     arguments=args)
-            regions[name] = r
-        return regions
+            self._regions[name] = r
+            self._regions_decorators[name] = r.cache_on_arguments()
+            self._regions_decorators_multi[name] = r.cache_multi_on_arguments()
+        return self._regions
 
     @property
     def regions(self):
-        ctx = stack.top
-        if ctx is not None:
-            if not hasattr(ctx, 'dogpile'):
-                ctx.dogpile_regions = self.create_regions()
-            return ctx.dogpile_regions
-        else:
+        if self._regions is None:
             raise RuntimeError("No flask context")
+        return self._regions
 
-    def __getattr__(self, name):
-        """
-        Override of attribute built-in
+    def cache_on_region(self, name):
+        def decorator(func):
+            setattr(func, self.FUNC_REGION_NAME_ATTR, name)
+            @wraps(func)
+            def wrapper(*args):
+                if name in self._regions:
+                    cache_decorator = self.get_region_decorator(name)
+                    return cache_decorator(func)(*args)
+                else:
+                    raise KeyError("You didn't specified region `%s`" % name)
+            return wrapper
+        return decorator
 
-        We can access our regions with . syntax:
-        cache.myregion
-        """
-        if name in self.regions:
-            return self.regions[name]
-        raise AttributeError("Cache region not found")
+    def get_region(self, region_name):
+        if self._regions is None:
+            raise RuntimeError("No flask context")
+        return self._regions[region_name]
+
+    def get_region_decorator(self, region_name):
+        if self._regions_decorators is None:
+            raise RuntimeError("No flask context")
+        return self._regions_decorators[region_name]
+
+    def get_region_decorator_multi(self, region_name):
+        if self._regions_decorators_multi is None:
+            raise RuntimeError("No flask context")
+        return self._regions_decorators_multi[region_name]
+
+    def invalidate_region(self, region_name, hard=True):
+        region = self.get_region(region_name)
+        region.invalidate(hard)
+
+    def invalidate_all_regions(self, hard=True):
+        for region_name in self.regions.keys():
+            self.invalidate_region(region_name, hard)
+
+    def invalidate(self, func, *args):
+        region_name = getattr(func, self.FUNC_REGION_NAME_ATTR)
+        decorator = self.get_region_decorator(region_name)
+        func = decorator(func)
+        return func.invalidate(*args)
+
+    def set(self, func, value, *args):
+        region_name = getattr(func, self.FUNC_REGION_NAME_ATTR)
+        decorator = self.get_region_decorator(region_name)
+        func = decorator(func)
+        return func.set(value, *args)
