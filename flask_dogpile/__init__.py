@@ -67,10 +67,25 @@ class FlaskDogpile(object):
     def cache_on_region(self, name):
         def decorator(func):
             setattr(func, self.FUNC_REGION_NAME_ATTR, name)
+            setattr(func, "multi", False)
             @wraps(func)
             def wrapper(*args):
                 if name in self._regions:
                     cache_decorator = self.get_region_decorator(name)
+                    return cache_decorator(func)(*args)
+                else:
+                    raise KeyError("You didn't specified region `%s`" % name)
+            return wrapper
+        return decorator
+
+    def cache_on_region_multi(self, name):
+        def decorator(func):
+            setattr(func, self.FUNC_REGION_NAME_ATTR, name)
+            setattr(func, "multi", True)
+            @wraps(func)
+            def wrapper(*args):
+                if name in self._regions:
+                    cache_decorator = self.get_region_decorator_multi(name)
                     return cache_decorator(func)(*args)
                 else:
                     raise KeyError("You didn't specified region `%s`" % name)
@@ -102,12 +117,27 @@ class FlaskDogpile(object):
 
     def invalidate(self, func, *args):
         region_name = getattr(func, self.FUNC_REGION_NAME_ATTR)
-        decorator = self.get_region_decorator(region_name)
+        if getattr(func, "multi"):
+            decorator = self.get_region_decorator_multi(region_name)
+        else:
+            decorator = self.get_region_decorator(region_name)
         func = decorator(func)
         return func.invalidate(*args)
 
+    def refresh(self, func, *args):
+        region_name = getattr(func, self.FUNC_REGION_NAME_ATTR)
+        if getattr(func, "multi"):
+            decorator = self.get_region_decorator_multi(region_name)
+        else:
+            decorator = self.get_region_decorator(region_name)
+        func = decorator(func)
+        return func.refresh(*args)
+
     def set(self, func, value, *args):
         region_name = getattr(func, self.FUNC_REGION_NAME_ATTR)
-        decorator = self.get_region_decorator(region_name)
+        if getattr(func, "multi"):
+            decorator = self.get_region_decorator_multi(region_name)
+        else:
+            decorator = self.get_region_decorator(region_name)
         func = decorator(func)
         return func.set(value, *args)
