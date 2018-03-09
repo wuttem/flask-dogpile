@@ -43,13 +43,14 @@ class FlaskDogpile(object):
         self._regions_decorators = {}
         self._regions_decorators_multi = {}
         for name, expiration in region_config:
-            args = {"url": backend_url}
+            args = {"default_url": backend_url}
             if backend_args is not None:
                 args.update(backend_args)
+            print(args)
             r = make_region(
-                name=name,
-                function_key_generator=kwarg_function_key_generator,
-                key_mangler=sha1_mangle_key).configure(
+                    name=name,
+                    function_key_generator=kwarg_function_key_generator,
+                    key_mangler=sha1_mangle_key).configure(
                     backend=backend,
                     expiration_time=int(expiration),
                     arguments=args)
